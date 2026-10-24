@@ -1,0 +1,37 @@
+
+F:\AI\AI\�°�yolo��עѵ������>chcp 65001  1>nul 
+
+F:\AI\AI\新版yolo标注训练工具>setlocal
+
+F:\AI\AI\新版yolo标注训练工具>cd /d "f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao\" 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if not exist "train_ui.py" (
+echo [ERROR] train_ui.py not found. Place this bat in the yoloPaoZhao folder.  
+ pause 
+ exit /b 1 
+) 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>set "PYTHON_EXE=" 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if exist ".venv\Scripts\python.exe" set "PYTHON_EXE=f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao\.venv\Scripts\python.exe" 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if not defined PYTHON_EXE if exist "D:\AI\Anaconda3\python.exe" set "PYTHON_EXE=D:\AI\Anaconda3\python.exe" 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if not defined PYTHON_EXE if exist "C:\Program Files\Python38\python.exe" set "PYTHON_EXE=C:\Program Files\Python38\python.exe" 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if not defined PYTHON_EXE (for /F "delims=" %i in ('where python 2>nul') do (
+set "PYTHON_EXE=%i"  
+ goto :found_python 
+) ) 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>if not defined PYTHON_EXE (
+echo [ERROR] Python not found. Please install Python 3.10+ and add it to PATH.  
+ pause 
+ exit /b 1 
+) 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>"D:\AI\Anaconda3\python.exe" -c "import streamlit"  2>nul 
+
+f:\AI\AI\新版yolo标注训练工具\AI项目\yoloPaoZhao>    echo [INFO] streamlit not found, installing dependencies (first run may take a while)...
+
+F:\AI\AI\新版yolo标注训练工具>
