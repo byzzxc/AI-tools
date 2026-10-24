@@ -1,6 +1,6 @@
 {
   "settings_version": "0.0.6",
-  "datasets_dir": "F:\\AI\\AI\\\u65b0\u7248yolo\u6807\u6ce8\u8bad\u7ec3\u5de5\u5177\\AI\u9879\u76ee\\yoloPaoZhao\\datasets",
+  "datasets_dir": "F:\\AI\\AI\\\u65b0\u7248yolo\u6807\u6ce8\u8bad\u7ec3\u5de5\u5177\\AI-tools\\yoloPaoZhao\\datasets",
   "weights_dir": "weights",
   "runs_dir": "runs",
   "uuid": "8a8ba0568f4cf8cbd476a19fcefbf4518fd3755b7d00d2d29c0ad5cde29cc08a",
