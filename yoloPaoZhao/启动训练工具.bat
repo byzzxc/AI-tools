@@ -60,11 +60,23 @@ echo   Close this window to stop the tool.
 echo ============================================
 echo.
 
-:: ===== Launch Streamlit =====
+:: ===== Kill any leftover streamlit on port 8501 =====
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8501" ^| findstr LISTENING 2^>nul') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
+:: ===== Launch a background watcher that opens the browser when server is ready =====
+start "YOLO11-Browser-Watcher" /MIN powershell -NoProfile -Command ^
+    "$u='http://localhost:8501';" ^
+    "for($i=0;$i -lt 30;$i++){" ^
+    "  try{ Invoke-WebRequest -UseBasicParsing -Uri $u -TimeoutSec 2 | Out-Null; Start-Process $u; exit 0 } catch {}" ^
+    "  Start-Sleep -Seconds 1" ^
+    "}" ^
+    "Write-Host 'Streamlit not ready - open browser manually:' $u"
+
+:: ===== Launch Streamlit (blocking; closing this window stops the tool) =====
 "%PYTHON_EXE%" -m streamlit run train_ui.py --server.port 8501 --server.headless true --browser.gatherUsageStats false
 
-:: Pause on exit so the user can read any error message
 echo.
-echo [INFO] Process exited. If it crashed, check the error above.
-echo Press any key to close this window...
-pause >nul
+echo [INFO] Streamlit process ended.
+pause

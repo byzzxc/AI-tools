@@ -4,7 +4,7 @@
   "custom_data": "",
   "epochs": 240,
   "batch": 16,
-  "imgsz": 640,
+  "imgsz": 960,
   "device": "0",
   "optimizer": "SGD",
   "workers": 4,

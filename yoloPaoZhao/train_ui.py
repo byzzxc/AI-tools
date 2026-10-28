@@ -45,6 +45,49 @@ LABELIMG_DIR = find_labelimg()
 DATA_IMAGES = WORKSPACE / "datasets" / "train" / "images"
 DATA_LABELS = WORKSPACE / "datasets" / "train" / "labels"
 
+# 导入时按 8:2 自动划分到 train / val；分配记录落盘（文件名主干 -> train/val）
+SPLIT_MAP_FILE = WORKSPACE / ".yolo_config" / "split_map.json"
+IMG_EXTS = {'.bmp', '.jpg', '.jpeg', '.png'}
+VAL_RATIO = 0.2
+
+
+def load_split_map():
+    """读取图片划分记录；文件不存在时按现有 train/val 目录重建。"""
+    if SPLIT_MAP_FILE.exists():
+        try:
+            data = json.loads(SPLIT_MAP_FILE.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    mapping = {}
+    for phase in ('train', 'val'):
+        d = WORKSPACE / "datasets" / phase / "images"
+        if d.exists():
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in IMG_EXTS:
+                    mapping[f.stem] = phase
+    save_split_map(mapping)
+    return mapping
+
+
+def save_split_map(mapping):
+    try:
+        SPLIT_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SPLIT_MAP_FILE.write_text(
+            json.dumps(mapping, ensure_ascii=False, indent=1), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def find_split_image(name):
+    """在 train/val 的 images 中查找同名图片，返回 (split, Path) 或 (None, None)。"""
+    for phase in ('train', 'val'):
+        p = WORKSPACE / "datasets" / phase / "images" / name
+        if p.exists():
+            return phase, p
+    return None, None
+
 # 训练超参数持久化：浏览器刷新会清空 session_state，这里落盘到项目内，刷新后自动恢复
 UI_PARAMS_FILE = WORKSPACE / ".yolo_config" / "train_params.json"
 
@@ -436,7 +479,9 @@ def stop_training_processes():
 # ============== Tab: 📤 导入图片 ==============
 def tab_import_images():
     st.subheader("📤 批量导入图片")
-    st.caption(f"目标目录: `{DATA_IMAGES}`")
+    st.caption("导入时会按 8:2 自动划分到 train / val 两个目录（图片和标签各归各的分组）")
+    st.markdown(f"图片目录: `{WORKSPACE / 'datasets'}` 下的 `train/images`、`val/images`")
+    st.markdown(f"标签目录: 同上目录下的 `train/labels`、`val/labels`")
 
     DATA_IMAGES.mkdir(parents=True, exist_ok=True)
     DATA_LABELS.mkdir(parents=True, exist_ok=True)
@@ -449,49 +494,126 @@ def tab_import_images():
     )
 
     if uploaded:
+        import random
         # 防重复：每次 rerun（如拖动滑块）uploader 都会返回全部已上传文件，
-        # 同名同大小的视为已保存过，直接跳过
+        # 同名同大小视为已保存过，直接跳过
+        split_map = load_split_map()
         new_files = []
         skipped = 0
         for uf in uploaded:
-            dst = DATA_IMAGES / uf.name
-            if dst.exists() and dst.stat().st_size == uf.size:
+            phase, existing = find_split_image(uf.name)
+            if existing is not None and existing.stat().st_size == uf.size:
+                split_map[Path(uf.name).stem] = phase
                 skipped += 1
             else:
                 new_files.append(uf)
 
         if new_files:
             progress = st.progress(0, text=f"正在保存 0/{len(new_files)} 张...")
+            n_train = n_val = 0
             for i, uf in enumerate(new_files):
                 safe_name = uf.name
-                dst = DATA_IMAGES / safe_name
+                # 已存在的同名图片沿用原 split，新图片按 8:2 随机分配
+                phase, existing = find_split_image(safe_name)
+                if existing is None:
+                    phase = 'val' if random.random() < VAL_RATIO else 'train'
+                target_dir = WORKSPACE / "datasets" / phase / "images"
+                target_dir.mkdir(parents=True, exist_ok=True)
+                dst = target_dir / safe_name
                 # 如果重名加后缀
                 n = 1
                 while dst.exists():
                     stem = Path(safe_name).stem
                     ext = Path(safe_name).suffix
-                    dst = DATA_IMAGES / f"{stem}_{n}{ext}"
+                    dst = target_dir / f"{stem}_{n}{ext}"
                     n += 1
                 with open(dst, 'wb') as f:
                     f.write(uf.read())
+                split_map[dst.stem] = phase
+                if phase == 'train':
+                    n_train += 1
+                else:
+                    n_val += 1
                 progress.progress((i + 1) / len(new_files), text=f"保存中 {i+1}/{len(new_files)}")
-            msg = f"✅ 成功保存 {len(new_files)} 张图片！"
+            save_split_map(split_map)
+            msg = f"✅ 成功保存 {len(new_files)} 张图片：train {n_train} 张 / val {n_val} 张"
             if skipped:
                 msg += f"（跳过已存在 {skipped} 张）"
             st.success(msg)
 
-    # 统计
-    exts = {'.bmp', '.jpg', '.jpeg', '.png'}
-    all_imgs = sorted([f for f in os.listdir(DATA_IMAGES)
-                       if Path(f).suffix.lower() in exts
-                       and (DATA_IMAGES / f).is_file()])
-    all_labels = [Path(f).stem + '.txt' for f in all_imgs]
+    # ===== 批量导入标注文件（YOLO txt）=====
+    st.divider()
+    st.markdown("**📥 批量导入标注文件**")
+    st.caption("标注文件会跟随对应图片所在的分组，自动放入 train/labels 或 val/labels")
+    uploaded_labels = st.file_uploader(
+        "上传标注文件（YOLO txt，支持多选）",
+        type=['txt'],
+        accept_multiple_files=True,
+        key="label_uploader",
+        help="文件名必须与图片同名，例如 001.jpg 对应 001.txt；同名文件会被覆盖",
+    )
+
+    if uploaded_labels:
+        split_map = load_split_map()
+        # 兜底：按现有图片重建 文件名主干 -> split 的索引
+        img_stems = {}
+        for phase in ('train', 'val'):
+            d = WORKSPACE / "datasets" / phase / "images"
+            if d.exists():
+                for f in d.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMG_EXTS:
+                        img_stems.setdefault(f.stem, phase)
+
+        new_lbl = 0
+        upd_lbl = 0
+        skip_lbl = 0
+        unmatched = 0
+        for uf in uploaded_labels:
+            stem = Path(uf.name).stem
+            phase = split_map.get(stem) or img_stems.get(stem)
+            if phase is None:
+                phase = 'train'
+                unmatched += 1
+            lbl_dir = WORKSPACE / "datasets" / phase / "labels"
+            lbl_dir.mkdir(parents=True, exist_ok=True)
+            dst = lbl_dir / uf.name
+            data = uf.read()
+            # 按内容比对，避免 rerun 时重复写入，同时允许覆盖内容已修改的同名文件
+            if dst.exists() and dst.read_bytes() == data:
+                skip_lbl += 1
+                continue
+            existed = dst.exists()
+            with open(dst, 'wb') as f:
+                f.write(data)
+            if existed:
+                upd_lbl += 1
+            else:
+                new_lbl += 1
+        msg = f"✅ 标注文件导入完成：新增 {new_lbl} 个"
+        if upd_lbl:
+            msg += f"，覆盖 {upd_lbl} 个"
+        if skip_lbl:
+            msg += f"（跳过已存在 {skip_lbl} 个）"
+        if unmatched:
+            msg += f"；⚠️ {unmatched} 个标注没有对应图片，已放入 train/labels"
+        st.success(msg)
+
+    # 统计（train + val 全部图片）
+    exts = IMG_EXTS
+    all_imgs = []  # (文件名, split, Path)
+    for phase in ('train', 'val'):
+        d = WORKSPACE / "datasets" / phase / "images"
+        if not d.exists():
+            continue
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.suffix.lower() in exts:
+                all_imgs.append((f.name, phase, f))
 
     has_label = 0
     empty_label = 0
     no_label = 0
-    for stem in [Path(f).stem for f in all_imgs]:
-        lp = DATA_LABELS / f"{stem}.txt"
+    for fname, phase, _ in all_imgs:
+        lp = WORKSPACE / "datasets" / phase / "labels" / f"{Path(fname).stem}.txt"
         if lp.exists():
             content = open(lp, 'r', encoding='utf-8', errors='ignore').read().strip()
             if content:
@@ -501,12 +623,16 @@ def tab_import_images():
         else:
             no_label += 1
 
+    n_train_imgs = sum(1 for _, p, _ in all_imgs if p == 'train')
+    n_val_imgs = sum(1 for _, p, _ in all_imgs if p == 'val')
+
     # 进度卡片
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📷 图片总数", len(all_imgs))
     c2.metric("✅ 已标注", has_label)
     c3.metric("📝 空标签(负样本)", empty_label)
     c4.metric("❌ 未标注", no_label, delta_color="inverse")
+    st.caption(f"train: {n_train_imgs} 张 | val: {n_val_imgs} 张")
 
     # 一键清空（危险操作，二次确认）
     with st.expander("🗑️ 清空数据集（删除全部图片和标签）"):
@@ -530,6 +656,9 @@ def tab_import_images():
             # 清理缓存文件
             for cache in WORKSPACE.glob("datasets/**/*.cache"):
                 cache.unlink()
+            # 清空后划分记录失效，删除避免新图片沿用旧归属
+            if SPLIT_MAP_FILE.exists():
+                SPLIT_MAP_FILE.unlink()
             st.success(f"✅ 已删除 {del_img} 张图片、{del_lbl} 个标签文件")
             time.sleep(1)
             st.rerun()
@@ -541,18 +670,17 @@ def tab_import_images():
         show_n = st.slider("显示数量", min(len(all_imgs), 6), len(all_imgs),
                            min(10, len(all_imgs)), key="img_show_n")
         cols = st.columns(5)
-        for i, fname in enumerate(all_imgs[:show_n]):
+        for i, (fname, phase, img_path) in enumerate(all_imgs[:show_n]):
             with cols[i % 5]:
-                img_path = DATA_IMAGES / fname
                 # 状态徽章
                 stem = Path(fname).stem
-                lp = DATA_LABELS / f"{stem}.txt"
+                lp = WORKSPACE / "datasets" / phase / "labels" / f"{stem}.txt"
                 if lp.exists():
                     content = open(lp, 'r', encoding='utf-8', errors='ignore').read().strip()
                     badge = "✅" if content else "⚪"
                 else:
                     badge = "❌"
-                st.image(str(img_path), caption=f"{badge} {fname}", use_column_width=True)
+                st.image(str(img_path), caption=f"{badge} [{phase}] {fname}", use_column_width=True)
         if len(all_imgs) > show_n:
             st.caption(f"... 还有 {len(all_imgs) - show_n} 张未显示")
     else:
@@ -569,37 +697,46 @@ def tab_import_images():
         names_str = st.text_input("类别名称 (逗号分隔，顺序须与 LabelImg predefined_classes.txt 一致)", default_names, key="import_names")
     names = [n.strip() for n in names_str.split(',') if n.strip()]
 
-    if st.button("⚡ 一键划分 train/val 并生成 data.yaml", use_container_width=True, key="btn_gen_yaml"):
+    if st.button("⚡ 一键重新划分 train/val 并生成 data.yaml", use_container_width=True, key="btn_gen_yaml"):
         import random
         random.seed(42)
-        # 用 prepare_dataset.py 里同样的逻辑
-        exts2 = {'.bmp', '.jpg', '.jpeg', '.png'}
-        imgs = [f for f in os.listdir(DATA_IMAGES)
-                if Path(f).suffix.lower() in exts2
-                and (DATA_IMAGES / f).is_file()]
-        random.shuffle(imgs)
-        split_idx = int(len(imgs) * 0.8)
-        train_imgs = sorted(imgs[:split_idx])
-        val_imgs = sorted(imgs[split_idx:])
+        # 收集 train/val 中已有的全部图片，按 8:2 重新分配（移动文件，避免同一张图同时出现在训练集和验证集）
+        items = []
+        for phase in ('train', 'val'):
+            d = WORKSPACE / "datasets" / phase / "images"
+            if d.exists():
+                for f in d.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMG_EXTS:
+                        items.append((phase, f))
+        random.shuffle(items)
+        split_idx = int(len(items) * 0.8)
 
-        for phase, file_list in [('train', train_imgs), ('val', val_imgs)]:
-            for sub in ['images', 'labels']:
-                p = WORKSPACE / "datasets" / phase / sub
-                p.mkdir(parents=True, exist_ok=True)
-            for fname in file_list:
-                stem = Path(fname).stem
-                src_img = DATA_IMAGES / fname
-                src_lbl = DATA_LABELS / f"{stem}.txt"
-                dst_img = WORKSPACE / "datasets" / phase / "images" / fname
-                dst_lbl = WORKSPACE / "datasets" / phase / "labels" / f"{stem}.txt"
-                if not dst_img.exists():
-                    shutil.copy2(src_img, dst_img)
-                # 总是同步最新标签（划分后继续标注，重新划分可刷新 val 标签）；
-                # 注意 train 阶段 src==dst，跳过自我复制
-                if src_lbl.exists() and src_lbl.resolve() != dst_lbl.resolve():
-                    shutil.copy2(src_lbl, dst_lbl)
-                elif not dst_lbl.exists():
-                    dst_lbl.touch()
+        new_map = {}
+        n_train = n_val = 0
+        for i, (cur_phase, img) in enumerate(items):
+            target = 'train' if i < split_idx else 'val'
+            target_img_dir = WORKSPACE / "datasets" / target / "images"
+            target_lbl_dir = WORKSPACE / "datasets" / target / "labels"
+            target_img_dir.mkdir(parents=True, exist_ok=True)
+            target_lbl_dir.mkdir(parents=True, exist_ok=True)
+            target_img = target_img_dir / img.name
+            if cur_phase != target:
+                shutil.move(str(img), str(target_img))
+            # 标签跟随图片移动
+            src_lbl = WORKSPACE / "datasets" / cur_phase / "labels" / f"{img.stem}.txt"
+            dst_lbl = target_lbl_dir / f"{img.stem}.txt"
+            if src_lbl.exists() and src_lbl != dst_lbl:
+                shutil.move(str(src_lbl), str(dst_lbl))
+            new_map[img.stem] = target
+            if target == 'train':
+                n_train += 1
+            else:
+                n_val += 1
+
+        save_split_map(new_map)
+        # 清理 ultralytics 标签缓存，避免旧缓存指向已移动的图片
+        for cache in WORKSPACE.glob("datasets/**/*.cache"):
+            cache.unlink()
 
         yaml_path = WORKSPACE / "datasets" / "data.yaml"
         yaml_content = f"""# YOLO 数据集配置
@@ -612,7 +749,7 @@ names: {names}
 """
         with open(yaml_path, 'w', encoding='utf-8') as f:
             f.write(yaml_content)
-        st.success(f"✅ 完成！train={len(train_imgs)}, val={len(val_imgs)}, data.yaml 已生成")
+        st.success(f"✅ 完成！train={n_train}, val={n_val}, data.yaml 已生成")
         st.code(str(yaml_path))
 
 
@@ -630,11 +767,30 @@ def _labelimg_python():
     return sys.executable
 
 
+def _pick_directory(title="选择文件夹"):
+    """弹出系统文件夹选择框，返回选中路径；取消或失败返回 None。"""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        path = filedialog.askdirectory(parent=root, title=title)
+        root.destroy()
+        return path or None
+    except Exception:
+        return None
+
+
 def tab_label_images():
     st.subheader("✏️ 标注图片（LabelImg）")
 
-    DATA_IMAGES.mkdir(parents=True, exist_ok=True)
-    DATA_LABELS.mkdir(parents=True, exist_ok=True)
+    # 图片已按 8:2 分到 train/val，这里选择要标注的分组
+    anno_phase = st.radio("标注分组", ["train", "val"], horizontal=True, key="anno_phase")
+    img_dir = WORKSPACE / "datasets" / anno_phase / "images"
+    lbl_dir = WORKSPACE / "datasets" / anno_phase / "labels"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
 
     # ===== 一键启动 LabelImg =====
     global LABELIMG_DIR
@@ -656,7 +812,7 @@ def tab_label_images():
                 env['PYTHONPATH'] = str(LABELIMG_DIR) + os.pathsep + env.get('PYTHONPATH', '')
                 # LabelImg 参数顺序: image_dir class_file save_dir
                 class_file = LABELIMG_DIR / "data" / "predefined_classes.txt"
-                cmd = [_labelimg_python(), str(labelimg_py), str(DATA_IMAGES), str(class_file), str(DATA_LABELS)]
+                cmd = [_labelimg_python(), str(labelimg_py), str(img_dir), str(class_file), str(lbl_dir)]
                 try:
                     subprocess.Popen(cmd, cwd=str(LABELIMG_DIR), env=env)
                     st.success("✅ LabelImg 已启动！图片和标签目录已自动加载。")
@@ -669,18 +825,18 @@ def tab_label_images():
         st.divider()
 
     # 统计（即使没图片也显示 0）
-    exts = {'.bmp', '.jpg', '.jpeg', '.png'}
-    all_imgs = sorted([f for f in os.listdir(DATA_IMAGES)
+    exts = IMG_EXTS
+    all_imgs = sorted([f for f in os.listdir(img_dir)
                        if Path(f).suffix.lower() in exts
-                       and (DATA_IMAGES / f).is_file()])
+                       and (img_dir / f).is_file()])
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📷 图片数", len(all_imgs))
-    c2.metric("📂 图片目录", f"datasets/train/images")
-    c3.metric("📂 标签目录", f"datasets/train/labels")
+    c2.metric("📂 图片目录", f"datasets/{anno_phase}/images")
+    c3.metric("📂 标签目录", f"datasets/{anno_phase}/labels")
 
     if len(all_imgs) == 0:
-        st.warning("⚠️ datasets/train/images 里还没有图片。请先到「📤 导入图片」Tab 上传，或直接用 LabelImg 的「打开目录」功能选择图片文件夹。")
+        st.warning(f"⚠️ datasets/{anno_phase}/images 里还没有图片。请先到「📤 导入图片」Tab 上传，或直接用 LabelImg 的「打开目录」功能选择图片文件夹。")
         return
 
     # ===== 标注进度 =====
@@ -691,7 +847,7 @@ def tab_label_images():
     detail = []
     for fname in all_imgs:
         stem = Path(fname).stem
-        lp = DATA_LABELS / f"{stem}.txt"
+        lp = lbl_dir / f"{stem}.txt"
         if lp.exists():
             content = open(lp, 'r', encoding='utf-8', errors='ignore').read().strip()
             if content:
@@ -743,10 +899,10 @@ def tab_label_images():
     if pick:
         pcol1, pcol2 = st.columns(2)
         with pcol1:
-            st.image(str(DATA_IMAGES / pick), caption=pick, use_column_width=True)
+            st.image(str(img_dir / pick), caption=f"[{anno_phase}] {pick}", use_column_width=True)
         with pcol2:
             stem = Path(pick).stem
-            lp = DATA_LABELS / f"{stem}.txt"
+            lp = lbl_dir / f"{stem}.txt"
             st.markdown(f"**标签文件:** `{stem}.txt`")
             if lp.exists():
                 content = open(lp, 'r', encoding='utf-8', errors='ignore').read()
@@ -1060,7 +1216,7 @@ def main():
                     st.markdown(f"- `{wf.name}` ({sz:.1f} MB)")
 
                 best_pt = weights / "best.pt"
-                col_exp, col_open = st.columns(2)
+                col_exp, col_open, col_bak = st.columns(3)
                 with col_exp:
                     export_clicked = st.button(
                         "📤 导出 ONNX（best.pt）",
@@ -1073,6 +1229,13 @@ def main():
                         "📂 打开模型目录",
                         use_container_width=True,
                         key=f"open_dir_{selected}",
+                    )
+                with col_bak:
+                    backup_clicked = st.button(
+                        "💾 复制 train 文件夹到其他文件夹",
+                        use_container_width=True,
+                        key=f"backup_train_{selected}",
+                        help="弹出选择框，把整个 datasets/train 文件夹（含 images 和 labels）复制到目标位置",
                     )
 
                 if export_clicked:
@@ -1103,6 +1266,33 @@ def main():
                         st.info(f"已打开目录：{weights}")
                     except Exception as e:
                         st.error(f"无法打开目录：{e}")
+
+                if backup_clicked:
+                    src_train = WORKSPACE / "datasets" / "train"
+                    if not src_train.exists():
+                        st.error("❌ 未找到 datasets/train 目录，请先导入并标注图片。")
+                    else:
+                        dst_dir = _pick_directory("选择备份目标文件夹")
+                        if not dst_dir:
+                            st.warning("未选择目标文件夹，已取消。")
+                        else:
+                            try:
+                                dst_path = Path(dst_dir) / "train"
+                                shutil.copytree(src_train, dst_path, dirs_exist_ok=True)
+                                n_img = sum(1 for f in (dst_path / "images").iterdir() if f.is_file()) if (dst_path / "images").exists() else 0
+                                n_lbl = sum(1 for f in (dst_path / "labels").iterdir() if f.is_file()) if (dst_path / "labels").exists() else 0
+                                st.session_state['last_backup_dir'] = str(dst_path)
+                                st.success(f"✅ 已复制整个 train 文件夹到 {dst_path}：{n_img} 张图片 + {n_lbl} 个标注")
+                            except Exception as e:
+                                st.error(f"❌ 复制失败：{e}")
+
+                last_bak = st.session_state.get('last_backup_dir')
+                if last_bak and Path(last_bak).exists():
+                    if st.button("📂 打开上次复制的文件夹", use_container_width=True, key=f"open_bak_{selected}"):
+                        try:
+                            os.startfile(last_bak)
+                        except Exception as e:
+                            st.error(f"无法打开目录：{e}")
 
                 # 列出已生成的 ONNX 等可部署文件，提供下载
                 deploy_files = []
