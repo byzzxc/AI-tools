@@ -75,6 +75,13 @@ def _upload_key(name, size, data=None):
         key = f"{key}|{h}"
     return key
 
+
+def uploader_epoch():
+    """清空数据集时自增。file_uploader 靠 key 标识，换 key 才能丢弃浏览器里已选的文件。"""
+    if 'uploader_epoch' not in st.session_state:
+        st.session_state['uploader_epoch'] = 0
+    return st.session_state['uploader_epoch']
+
 # 训练超参数持久化：浏览器刷新会清空 session_state，这里落盘到项目内，刷新后自动恢复
 UI_PARAMS_FILE = WORKSPACE / ".yolo_config" / "train_params.json"
 
@@ -477,7 +484,7 @@ def tab_import_images():
         "上传图片（支持多选）",
         type=['bmp', 'jpg', 'jpeg', 'png'],
         accept_multiple_files=True,
-        key="image_uploader",
+        key=f"image_uploader_{uploader_epoch()}",
         help="支持 bmp / jpg / jpeg / png",
     )
 
@@ -530,7 +537,7 @@ def tab_import_images():
         "上传标注文件（YOLO txt，支持多选）",
         type=['txt'],
         accept_multiple_files=True,
-        key="label_uploader",
+        key=f"label_uploader_{uploader_epoch()}",
         help="文件名必须与图片同名，例如 001.jpg 对应 001.txt；同名文件会被覆盖",
     )
 
@@ -616,12 +623,10 @@ def tab_import_images():
             # 清幂等表，让新一轮上传从干净状态开始
             if UPLOAD_MAP_FILE.exists():
                 UPLOAD_MAP_FILE.unlink()
-            # 同时清掉 Streamlit 浏览器端 uploader 的 session_state，
-            # 防止刷新页面时 uploader 重放旧文件流 → 又被当作"新上传"写回磁盘（死循环）
-            for uk in ("image_uploader", "label_uploader"):
-                if uk in st.session_state:
-                    del st.session_state[uk]
-            st.success(f"✅ 已删除 {del_img} 张图片、{del_lbl} 个标签文件，uploader 历史已清空")
+            # 自增 epoch：两个 file_uploader 会换用新的 key，浏览器里残留的已选文件被丢弃，
+            # 刷新页面也不会再把上次的文件重放回来
+            st.session_state['uploader_epoch'] = uploader_epoch() + 1
+            st.success(f"✅ 已删除 {del_img} 张图片、{del_lbl} 个标签文件，上传记录已清空")
             time.sleep(1)
             st.rerun()
 
