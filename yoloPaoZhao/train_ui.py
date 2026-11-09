@@ -1165,7 +1165,7 @@ def main():
                     st.markdown(f"- `{wf.name}` ({sz:.1f} MB)")
 
                 best_pt = weights / "best.pt"
-                col_exp, col_open, col_bak = st.columns(3)
+                col_exp, col_open, col_bak, col_cponnx = st.columns(4)
                 with col_exp:
                     export_clicked = st.button(
                         "📤 导出 ONNX（best.pt）",
@@ -1185,6 +1185,13 @@ def main():
                         use_container_width=True,
                         key=f"backup_train_{selected}",
                         help="弹出选择框，把整个 datasets/train 文件夹（含 images 和 labels）复制到目标位置",
+                    )
+                with col_cponnx:
+                    cp_onnx_clicked = st.button(
+                        "📋 复制 ONNX 到其他文件夹",
+                        use_container_width=True,
+                        key=f"cp_onnx_{selected}",
+                        help="弹出选择框，把已导出的 ONNX 模型文件复制到你指定的文件夹",
                     )
 
                 if export_clicked:
@@ -1234,6 +1241,32 @@ def main():
                                 st.success(f"✅ 已复制整个 train 文件夹到 {dst_path}：{n_img} 张图片 + {n_lbl} 个标注")
                             except Exception as e:
                                 st.error(f"❌ 复制失败：{e}")
+
+                if cp_onnx_clicked:
+                    src_onnx = weights / "best.onnx"
+                    if not src_onnx.exists():
+                        st.warning("⚠️ 还没有 best.onnx，请先点击「📤 导出 ONNX（best.pt）」。")
+                    else:
+                        dst_dir = _pick_directory("选择 ONNX 复制目标文件夹")
+                        if not dst_dir:
+                            st.warning("未选择目标文件夹，已取消。")
+                        else:
+                            try:
+                                dst_path = Path(dst_dir) / src_onnx.name
+                                shutil.copy2(src_onnx, dst_path)
+                                mb = src_onnx.stat().st_size / (1024**2)
+                                st.session_state['last_onnx_dir'] = str(dst_dir)
+                                st.success(f"✅ 已复制 {src_onnx.name}（{mb:.1f} MB）到 {dst_path}")
+                            except Exception as e:
+                                st.error(f"❌ 复制失败：{e}")
+
+                last_onnx = st.session_state.get('last_onnx_dir')
+                if last_onnx and Path(last_onnx).exists():
+                    if st.button("📂 打开 ONNX 复制目录", use_container_width=True, key=f"open_onnx_{selected}"):
+                        try:
+                            os.startfile(last_onnx)
+                        except Exception as e:
+                            st.error(f"无法打开目录：{e}")
 
                 last_bak = st.session_state.get('last_backup_dir')
                 if last_bak and Path(last_bak).exists():
